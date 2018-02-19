@@ -15,15 +15,17 @@ use skeeks\cms\importCsv\ImportCsvHandler;
 use skeeks\cms\importCsvContent\widgets\MatchingInput;
 use skeeks\cms\models\CmsContent;
 use skeeks\cms\models\CmsContentElement;
+use skeeks\cms\models\Tree;
 use skeeks\cms\models\CmsContentPropertyEnum;
-use skeeks\cms\relatedProperties\PropertyType;
-use skeeks\cms\relatedProperties\propertyTypes\PropertyTypeElement;
-use skeeks\cms\relatedProperties\propertyTypes\PropertyTypeList;
+use \v3toys\skeeks\models\V3toysProductContentElement;
+use skeeks\cms\relatedProperties;
 use yii\base\Exception;
 use yii\helpers\ArrayHelper;
 use yii\helpers\FileHelper;
 use yii\helpers\Json;
 use yii\widgets\ActiveForm;
+use yii\data\Pagination;
+
 
 /**
  * @property CmsContent $cmsContent
@@ -37,6 +39,13 @@ class ExportCsvContentHandler extends ExportHandler
     public $content_id = null;
 
     public $file_path = '';
+
+    /**
+     * @var int
+     */
+    public $max_urlsets = 20;
+    public $mem_start = null;
+
 
 
     const CSV_CHARSET_UTF8           = 'UTF-8';             //другой
@@ -184,67 +193,152 @@ class ExportCsvContentHandler extends ExportHandler
 
 
 
-        $elements = CmsContentElement::find()->where([
+        $query = CmsContentElement::find()->where([
             'content_id' => $this->content_id
-        ])->all();
+        ]);
 
-        $countTotal = count($elements);
+        $countTotal = $query->count();
+
         $this->result->stdout("\tЭлементов найдено: {$countTotal}\n");
 
 
-
-        $element = $elements[0];
-
-        $fp = fopen($this->rootFilePath, 'w');
+        /**
+         * Формируем шапку
+         */
+        $firstElemForHeader = $query->one();
 
         $head = [];
-        foreach ($element->toArray() as $code => $value)
+        foreach ($firstElemForHeader->toArray() as $code => $value)
         {
             $head[] = "element." . $code;
+            unset($value);
         }
         /**
          * @var $element CmsContentElement
          */
-        foreach ($element->relatedPropertiesModel->toArray() as $code => $value)
+        foreach ($firstElemForHeader->relatedPropertiesModel->toArray() as $code => $value)
         {
             $head[] = 'property.' . $code;
+            unset($value);
         }
 
+
+        $head[] = "v3code;url;image";
+
+        /**
+         * откроем файл и запишем туда шапку
+         */
+        $fp = fopen($this->rootFilePath, 'w');
         fputcsv($fp, $head, ";");
+        fclose($fp);
+        unset($fp, $head, $firstElemForHeader, $v3property, $shopCmsContentElement);
 
-        foreach ($elements as $element)
-        {
-            $propertiesRow = [];
-            foreach ($element->relatedPropertiesModel->toArray() as $code => $value)
+        /**
+         * Чтобы не загромождать память, разбиваем результаты на страницы
+         */
+
+        $i = 0;
+        $pages = new Pagination([
+            'totalCount'        => $countTotal,
+            'defaultPageSize'   => $this->max_urlsets,
+            'pageSizeLimit'   => [1, $this->max_urlsets],
+        ]);
+
+        for ($i >= 0; $i < $pages->pageCount; $i ++) {
+            $pages->setPage($i);
+
+            $this->result->stdout("\t\t\t\t Page = {$i}\n");
+            $this->result->stdout("\t\t\t\t Offset = {$pages->offset}\n");
+            $this->result->stdout("\t\t\t\t limit = {$pages->limit}\n");
+
+
+
+            foreach ($elements = $query->offset($pages->offset)->limit($pages->limit)->each(20) as $element)
             {
-                $value = $element->relatedPropertiesModel->getSmartAttribute($code);
-                if (is_array($value))
+                $this->result->stdout("\tТовар: ". $element->name . "\n");
+
+                $fp = fopen($this->rootFilePath, 'a');
+
+                $propertiesRow = [];
+
+                foreach ($element->relatedPropertiesModel->toArray() as $code => $value)
                 {
-                    $value = implode(', ', $value);
-                }
+                    $value = $element->relatedPropertiesModel->getSmartAttribute($code);
+                    $intValue = (int) $value;
+                    $propertyValue = '';
 
-                $propertiesRow[$code] = $value;
-            }
-
-            $row = array_merge($element->toArray(), $propertiesRow);
-
-            if (\Yii::$app->charset != $this->charset)
-            {
-                foreach ($row as $key => $value)
-                {
-                    if (is_string($value))
+                    if ($intValue>0)
                     {
-                        $row[$key] = iconv(\Yii::$app->charset, $this->charset, $value);
+                        $_property = Tree::findOne(['id'  =>  (int) $value]);
+                        if ($_property)
+                        {
+                            $propertyValue = $_property->name;
+                            $propertiesRow[$code] = $propertyValue;
+                            unset($_property, $value);
+                            continue;
+                        }
+                        $_property = CmsContentElement::findOne(['id'  =>  (int) $value]);
+                        if ($_property)
+                        {
+                            $propertyValue = $_property->name;
+                            $propertiesRow[$code] = $propertyValue;
+                            unset($_property, $value);
+                            continue;
+                        }
+
+                    }
+                    if (is_array($value))
+                    {
+                        /**
+                         * @var $_property CmsContentElement
+                         */
+
+                        foreach ($value as $key => $val_id)
+                        {
+                            $_property = CmsContentElement::findOne(['id'  => (int) $val_id]);
+
+                            $propertyValue .= $_property->name;
+                            if ($key<count($value))
+                            {
+                                $propertyValue .=  ', ';
+                            }
+                        }
+                    }
+                    else
+                    {
+                       $propertyValue = $value;
+                    }
+
+                    $propertiesRow[$code] = $propertyValue;
+                    unset($value, $_property);
+                }
+                unset($_property, $intValue);
+
+                $shopCmsContentElement = new \v3toys\skeeks\models\V3toysProductContentElement($element->toArray());
+
+                $row = array_merge($element->toArray(), $propertiesRow, [$shopCmsContentElement->v3toysProductProperty->v3toys_id, $element->url, $element->image->src]);
+                unset($element, $shopCmsContentElement);
+                if (\Yii::$app->charset != $this->charset)
+                {
+                    foreach ($row as $key => $value)
+                    {
+                        if (is_string($value))
+                        {
+                            $row[$key] = iconv(\Yii::$app->charset, $this->charset, $value);
+                        }
                     }
                 }
+
+                fputcsv($fp, $row, ";");
+
+                fclose($fp);
+                unset($row );
             }
+            unset($elements);
 
-
-            fputcsv($fp, $row, ";");
         }
 
-        fclose($fp);
-
-        return $this->result;
+        $this->result->stdout("\tФайл сформирован по указанному пути \n". $this->rootFilePath ."\n");
+        die();
     }
 }

@@ -43,7 +43,7 @@ class ExportCsvContentHandler extends ExportHandler
     /**
      * @var int
      */
-    public $max_urlsets = 20;
+    public $max_urlsets = 60;
     public $mem_start = null;
 
 
@@ -222,9 +222,6 @@ class ExportCsvContentHandler extends ExportHandler
             unset($value);
         }
 
-
-        $head[] = "v3code;url;image";
-
         /**
          * откроем файл и запишем туда шапку
          */
@@ -260,64 +257,20 @@ class ExportCsvContentHandler extends ExportHandler
                 $fp = fopen($this->rootFilePath, 'a');
 
                 $propertiesRow = [];
-
                 foreach ($element->relatedPropertiesModel->toArray() as $code => $value)
                 {
                     $value = $element->relatedPropertiesModel->getSmartAttribute($code);
-                    $intValue = (int) $value;
-                    $propertyValue = '';
-
-                    if ($intValue>0)
-                    {
-                        $_property = Tree::findOne(['id'  =>  (int) $value]);
-                        if ($_property)
-                        {
-                            $propertyValue = $_property->name;
-                            $propertiesRow[$code] = $propertyValue;
-                            unset($_property, $value);
-                            continue;
-                        }
-                        $_property = CmsContentElement::findOne(['id'  =>  (int) $value]);
-                        if ($_property)
-                        {
-                            $propertyValue = $_property->name;
-                            $propertiesRow[$code] = $propertyValue;
-                            unset($_property, $value);
-                            continue;
-                        }
-
-                    }
                     if (is_array($value))
                     {
-                        /**
-                         * @var $_property CmsContentElement
-                         */
-
-                        foreach ($value as $key => $val_id)
-                        {
-                            $_property = CmsContentElement::findOne(['id'  => (int) $val_id]);
-
-                            $propertyValue .= $_property->name;
-                            if ($key<count($value))
-                            {
-                                $propertyValue .=  ', ';
-                            }
-                        }
+                        $value = implode(', ', $value);
                     }
-                    else
-                    {
-                       $propertyValue = $value;
-                    }
+                    $propertiesRow[$code] = $value;
 
-                    $propertiesRow[$code] = $propertyValue;
-                    unset($value, $_property);
+                    unset($value);
                 }
-                unset($_property, $intValue);
 
-                $shopCmsContentElement = new \v3toys\skeeks\models\V3toysProductContentElement($element->toArray());
+                $row = array_merge($element->toArray(), $propertiesRow);
 
-                $row = array_merge($element->toArray(), $propertiesRow, [$shopCmsContentElement->v3toysProductProperty->v3toys_id, $element->url, $element->image->src]);
-                unset($element, $shopCmsContentElement);
                 if (\Yii::$app->charset != $this->charset)
                 {
                     foreach ($row as $key => $value)
@@ -326,13 +279,13 @@ class ExportCsvContentHandler extends ExportHandler
                         {
                             $row[$key] = iconv(\Yii::$app->charset, $this->charset, $value);
                         }
+                        unset($value);
                     }
                 }
 
                 fputcsv($fp, $row, ";");
-
                 fclose($fp);
-                unset($row );
+                unset($row, $element);
             }
             unset($elements);
 
